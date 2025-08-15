@@ -15,12 +15,12 @@
 //! let chosen = r.pick_top(&"my-key");
 //! assert!(chosen.is_some());
 //! ```
-use std::collections::hash_map::RandomState;
+use std::collections::{HashSet, hash_map::RandomState};
 use std::hash::{BuildHasher, Hash, Hasher};
 
 #[derive(Clone, Debug)]
 pub struct Rendezvous<N, S = RandomState> {
-    nodes: Vec<N>,
+    nodes: HashSet<N>,
     build: S,
 }
 
@@ -31,7 +31,7 @@ where
     /// Default: uses `RandomState` (SipHash-like) for decent DoS-resistance.
     pub fn new() -> Self {
         Self {
-            nodes: Vec::new(),
+            nodes: Default::default(),
             build: RandomState::new(),
         }
     }
@@ -55,7 +55,7 @@ where
 
 impl<N, S> Rendezvous<N, S>
 where
-    N: Hash + Eq + PartialOrd + std::fmt::Debug,
+    N: Hash + Eq + Ord + PartialOrd,
     S: BuildHasher + Clone,
 {
     /// Construct with a custom hasher builder (e.g., ahash::RandomState).
@@ -67,21 +67,11 @@ where
     }
 
     pub fn add_node(&mut self, node: N) -> bool {
-        if !self.nodes.iter().any(|n| n == &node) {
-            self.nodes.push(node);
-            true
-        } else {
-            false
-        }
+        self.nodes.insert(node)
     }
 
     pub fn remove_node(&mut self, node: &N) -> bool {
-        if let Some(i) = self.nodes.iter().position(|n| n == node) {
-            self.nodes.swap_remove(i);
-            true
-        } else {
-            false
-        }
+        self.nodes.remove(node)
     }
 
     #[inline]
@@ -96,7 +86,7 @@ where
     pub fn pick_top<K: Hash>(&self, key: &K) -> Option<&N> {
         self.nodes
             .iter()
-            .max_by_key(|n| Self::hrw_score(key, *n, &self.build))
+            .max_by_key(|&n| (Self::hrw_score(key, n, &self.build), n))
     }
 
     /// Pick the top-k nodes with partial selection (O(N) + O(k log k))
@@ -259,7 +249,7 @@ mod tests {
         // Should return at most all nodes, and all should be from the original set
         assert!(all.len() <= r.len());
         for n in &all {
-            assert!(r.nodes.contains(n));
+            assert!(r.nodes.contains(*n));
         }
         // Should not panic if k > nodes.len()
     }
