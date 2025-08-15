@@ -18,22 +18,8 @@
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 
-/// Compute a 64-bit HRW (rendezvous) score using an arbitrary BuildHasher.
-/// We hash both the key and the node into the same hasher instance.
-#[inline]
-fn hrw_score<K: Hash, N: Hash, S: BuildHasher>(key: &K, node: &N, build: &S) -> u64 {
-    let mut h = build.build_hasher();
-    key.hash(&mut h);
-    node.hash(&mut h);
-    h.finish()
-}
-
 #[derive(Clone, Debug)]
-pub struct Rendezvous<N, S = RandomState>
-where
-    N: Hash + Eq,
-    S: BuildHasher + Clone,
-{
+pub struct Rendezvous<N, S = RandomState> {
     nodes: Vec<N>,
     build: S,
 }
@@ -69,7 +55,7 @@ where
 
 impl<N, S> Rendezvous<N, S>
 where
-    N: Hash + Eq,
+    N: Hash + Eq + PartialOrd + std::fmt::Debug,
     S: BuildHasher + Clone,
 {
     /// Construct with a custom hasher builder (e.g., ahash::RandomState).
@@ -98,34 +84,45 @@ where
         }
     }
 
+    #[inline]
+    fn hrw_score<K: Hash>(key: &K, node: &N, build: &S) -> u64 {
+        let mut h = build.build_hasher();
+        key.hash(&mut h);
+        node.hash(&mut h);
+        h.finish()
+    }
+
     /// Pick the single best node (O(N) max scan).
     pub fn pick_top<K: Hash>(&self, key: &K) -> Option<&N> {
         self.nodes
             .iter()
-            .max_by_key(|n| hrw_score(key, *n, &self.build))
+            .max_by_key(|n| Self::hrw_score(key, *n, &self.build))
     }
 
-    /// Pick the top-k nodes with partial selection (`select_nth_unstable_by`).
-    /// Deterministic replica order is preserved by sorting only the top-k slice.
+    /// Pick the top-k nodes with partial selection (O(N) + O(k log k))
     pub fn pick_top_k<K: Hash>(&self, key: &K, k: usize) -> Vec<&N> {
         if self.nodes.is_empty() || k == 0 {
             return Vec::new();
         }
         let k = k.min(self.nodes.len());
 
-        let mut scored: Vec<(u64, usize)> = self
+        let mut scored: Vec<_> = self
             .nodes
             .iter()
-            .enumerate()
-            .map(|(i, n)| (hrw_score(key, n, &self.build), i))
+            .map(|n| (Self::hrw_score(key, n, &self.build), n))
             .collect();
 
-        scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-        scored
-            .iter()
-            .take(k)
-            .map(|&(_, i)| &self.nodes[i])
-            .collect()
+        let k = k.min(scored.len());
+        let nth = k - 1;
+
+        // After this, the top-k elements are in scored[..k] in arbitrary order
+        scored.select_nth_unstable_by(nth, |a, b| b.0.cmp(&a.0));
+
+        // Now sort only the top-k slice to get deterministic replica order
+        scored[..k].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+
+        // Return the top-k nodes
+        scored[..k].iter().map(|&(_, n)| n).collect()
     }
 
     pub fn len(&self) -> usize {
@@ -188,11 +185,10 @@ mod tests {
         use ahash::RandomState as AHash;
         let r = Rendezvous::from_nodes_and_hasher(["X", "Y", "Z"], AHash::new());
         let key = "alpha";
-        let one = r.pick_top(&key);
+        let one = r.pick_top(&key).unwrap();
         let top2 = r.pick_top_k(&key, 2);
-        assert!(one.is_some());
         assert_eq!(top2.len(), 2);
-        assert!(top2.contains(&one.unwrap()));
+        assert_eq!(top2[0], one);
     }
 
     #[test]
