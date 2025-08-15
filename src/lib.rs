@@ -58,6 +58,15 @@ where
     }
 }
 
+impl<N> Default for Rendezvous<N, RandomState>
+where
+    N: Hash + Eq,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<N, S> Rendezvous<N, S>
 where
     N: Hash + Eq,
@@ -71,9 +80,12 @@ where
         }
     }
 
-    pub fn add_node(&mut self, node: N) {
+    pub fn add_node(&mut self, node: N) -> bool {
         if !self.nodes.iter().any(|n| n == &node) {
             self.nodes.push(node);
+            true
+        } else {
+            false
         }
     }
 
